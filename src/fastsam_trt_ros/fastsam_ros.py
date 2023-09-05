@@ -10,7 +10,7 @@ import os
 import numpy as np
 
 import rospy
-from sensor_msgs.msg import Image, CompressedImage
+from sensor_msgs.msg import Image as SImage, CompressedImage
 from vision_msgs.msg import Detection2DArray
 from cv_bridge import CvBridge
 import message_filters
@@ -33,35 +33,41 @@ class FastSamNode:
         self.img_bridge = CvBridge()
         self.predictor = FastSam(model_path, max_size=image_size)
 
-        # if self.compressed:
-        #     self.det_sub = rospy.Subscriber("image_in" +'/compressed', CompressedImage, self.image_callback, queue_size=1)
-        #     self.image_pub = rospy.Publisher("image_out" + "/compressed", CompressedImage, queue_size=1)
-        # else:
-        #     self.image_sub = rospy.Subscriber("image_in", Image, self.image_callback, queue_size=1)
-        #     self.image_pub = rospy.Publisher("image_out", Image, queue_size=1)
 
-        self.image_sub = message_filters.Subscriber("image_in/compressed", CompressedImage)
         self.detection_sub = message_filters.Subscriber("detections", Detection2DArray)
 
-        self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 20)
-        self.image_det_sync.registerCallback(self.image_detection_callback)
+        if self.compressed:
+            self.image_sub = message_filters.Subscriber("image_in/compressed", CompressedImage)
+            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 20)
+            self.image_det_sync.registerCallback(self.image_compressed_detection_callback)
+        else:
+            self.image_sub = message_filters.Subscriber("image_in", SImage)
+            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 20)
+            self.image_det_sync.registerCallback(self.image_detection_callback)
 
         self.image_pub = rospy.Publisher("image_out" + "/compressed", CompressedImage, queue_size=1)
+        self.inter_img_pub = rospy.Publisher("image_out_inter" + "/compressed", CompressedImage, queue_size=1)
         self.detection_pub = rospy.Publisher("fastsam_detections", DetectionArray, queue_size=1)
 
 
-    def image_detection_callback(self, img_msg:CompressedImage, det_msg:Detection2DArray):
-        np_image = np.frombuffer(img_msg.data, dtype=np.uint8)
-        self.cv_image = cv2.imdecode(np_image, cv2.IMREAD_UNCHANGED)
+    def run_detection(self, det_msg):
+
+        t0 = time.perf_counter()
+        if(self.cv_image is None):
+            return
         
         ori_h = self.cv_image.shape[0]
         ori_w = self.cv_image.shape[1]
-
+        # inter_img = self.cv_image.copy()
 
         # t0 = time.perf_counter()
         self.results = self.predictor.segment(self.cv_image, self.conf, self.iou, self.retina_mask, self.agnostic_nms)
-        # print(self.results[0].masks.data[0].shape)
+        # print(self.results[0].masks.data[0].to(0))
+        # print(self.results[0].masks.data[0].device)
 
+        if(self.results[0].masks is None):
+            return
+        
         annotations = []
         for det in det_msg.detections:
             
@@ -72,11 +78,12 @@ class FastSamNode:
 
             bbox = [c_x, c_y, w, h]
             # bbox = 
-            mask, rbbox, contour, iou_val = box_prompt(self.results[0].masks.data, convert_box_cxcywh_to_xyxy(bbox), ori_h, ori_w)
+            mask, rbbox, new_bbox, contour, iou_val = box_prompt(self.results[0].masks.data, convert_box_cxcywh_to_xyxy(bbox), ori_h, ori_w)
             
             annotation = {}
             annotation["mask"] = mask.astype(np.int8)
             annotation["bbox"] = bbox
+            annotation["new_bbox"] = new_bbox
             annotation["rbbox"] = rbbox #format (x0, y0), (w, h), deg
             annotation["score"] = det.results[0].score
             annotation["id"] = det.results[0].id
@@ -125,16 +132,42 @@ class FastSamNode:
         self.detection_pub.publish(fdet_msg)
 
         if self.image_pub.get_num_connections() > 0:
-            self.disp_img = vis(self.cv_image, annotations)
-            # print(self.cv_image.shape   )
-            # self.display_img = draw_masks(self.cv_image, self.results, self.image_size)
+            disp_img = vis(self.cv_image, annotations)
             disp_msg = CompressedImage()
-            disp_msg.header.stamp = img_msg.header.stamp
+            disp_msg.header.stamp = det_msg.header.stamp
             disp_msg.format = "jpeg"
-            disp_msg.data = np.array(cv2.imencode('.jpg', self.disp_img)[1]).tostring()
-            # Publish new image
+            disp_msg.data = np.array(cv2.imencode('.jpg', disp_img)[1]).tostring()
             self.image_pub.publish(disp_msg)
-        # print((time.perf_counter() - t0)*1000, 'ms')
+
+        # if self.inter_img_pub.get_num_connections() > 0:
+        #     inter_img = draw_masks(inter_img, self.results, self.image_size)
+            
+        #     disp_msg = CompressedImage()
+        #     disp_msg.header.stamp = det_msg.header.stamp
+        #     disp_msg.format = "jpeg"
+        #     disp_msg.data = np.array(cv2.imencode('.jpg', inter_img)[1]).tostring()
+        #     # Publish new image
+        #     self.inter_img_pub.publish(disp_msg)
+
+        print('FASTSAM :', (time.perf_counter() - t0)*1000, 'ms')
+
+    def image_detection_callback(self, img_msg:SImage, det_msg:Detection2DArray):
+        cv_image = self.img_bridge.imgmsg_to_cv2(img_msg, "rgb8")
+        if (cv_image.shape[2] == 4):
+            # cv_image = cv_image[:,:,:3]
+            cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGBA2RGB)
+
+        self.cv_image = cv_image
+        
+        self.run_detection(det_msg)
+
+    def image_compressed_detection_callback(self, img_msg:CompressedImage, det_msg:Detection2DArray):
+        np_image = np.frombuffer(img_msg.data, dtype=np.uint8)
+        self.cv_image = cv2.imdecode(np_image, cv2.IMREAD_UNCHANGED)
+
+        self.run_detection(det_msg)
+        
+        
 
     def image_callback(self, msg):
         
@@ -162,7 +195,7 @@ class FastSamNode:
         
 
 def main(args):
-    rospy.init_node('fastsam_ros', anonymous=True)
+    rospy.init_node('fastsam_ros')
     
     model_path = rospy.get_param('~model_path')
     compressed = rospy.get_param('~compressed', default=False)

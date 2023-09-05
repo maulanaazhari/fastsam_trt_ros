@@ -17,6 +17,8 @@ find_package(catkin REQUIRED COMPONENTS
   fastsam_ros_msgs
 )
 
+catkin_python_setup()
+
 
 catkin_package(
  INCLUDE_DIRS include
@@ -32,13 +34,11 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-# include
+  include
   ${catkin_INCLUDE_DIRS}
 )
 
-
-catkin_python_setup()
-catkin_package(CATKIN_DEPENDS rospy)
+# catkin_package(CATKIN_DEPENDS rospy)
 
 catkin_install_python(PROGRAMS src/fastsam_trt_ros/fastsam_ros.py
         DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
