@@ -141,7 +141,6 @@ class TrtModelNMS(object):
         # Allocate
         self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size = \
                 allocate_buffers_nms(self.engine)
-        # print(self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size)
         self.context = self.engine.create_execution_context()
         self.context.active_optimization_profile = 0
         # non lazy load implementation
@@ -162,9 +161,8 @@ class TrtModelNMS(object):
         trt_outputs = do_inference(
             self.context, bindings=self.bindings,
             inputs=self.inputs, outputs=self.outputs, stream=self.stream)
-        # print(self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size)
-        # Reshape TRT outputs to original shape instead of flattened array
 
+        # Reshape TRT outputs to original shape instead of flattened array
         if deflatten:
             out_shapes = [(batch_size, ) + self.out_shapes[ix] for ix in range(len(self.out_shapes))]
             trt_outputs = [output[:np.prod(shape)].reshape(shape) for output, shape in zip(trt_outputs, out_shapes)]
@@ -231,6 +229,7 @@ class FastSam(object):
         self.imgsz = (max_size, max_size)
         # Load model
         self.model = TrtModelNMS(model_weights, max_size)
+        self.get_fps()
 
 
     def segment(self, bgr_img, conf, iou, retina_mask, agnostic_nms):
@@ -240,8 +239,8 @@ class FastSam(object):
         ## Inference
         preds = self.model.run(inp)
         
-        data_0 = torch.from_numpy(preds[5])
-        data_1 = [[torch.from_numpy(preds[2]), torch.from_numpy(preds[3]), torch.from_numpy(preds[4])], torch.from_numpy(preds[1]), torch.from_numpy(preds[0])]
+        data_0 = torch.from_numpy(preds[5]).cuda()
+        data_1 = [[torch.from_numpy(preds[2]).cuda(), torch.from_numpy(preds[3]).cuda(), torch.from_numpy(preds[4]).cuda()], torch.from_numpy(preds[1]).cuda(), torch.from_numpy(preds[0]).cuda()]
         preds = [data_0, data_1]
 
         results = postprocess(preds, inp, bgr_img, retina_mask, conf, iou, agnostic_nms)
@@ -250,3 +249,16 @@ class FastSam(object):
     
     def draw_masks(self, img, results, img_size):
         return draw_masks(img, results, img_size)
+    
+    def get_fps(self):
+        import time
+        img = np.ones((self.imgsz[0], self.imgsz[1], 3))
+        img = np.ascontiguousarray(img, dtype=np.float32)
+        inp = pre_processing(img, self.imgsz[0])
+        for _ in range(5):  # warmup
+            _ = self.model.run(inp)
+
+        t0 = time.perf_counter()
+        for _ in range(100):  # calculate average time
+            _ = self.model.run(inp)
+        print(100/(time.perf_counter() - t0), 'FPS')

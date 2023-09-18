@@ -33,7 +33,6 @@ def segment_image(image, bbox):
     segmented_image_array[y1:y2, x1:x2] = image_array[y1:y2, x1:x2]
     segmented_image = Image.fromarray(segmented_image_array)
     black_image = Image.new("RGB", image.size, (255, 255, 255))
-    # transparency_mask = np.zeros_like((), dtype=np.uint8)
     transparency_mask = np.zeros(
         (image_array.shape[0], image_array.shape[1]), dtype=np.uint8
     )
@@ -114,6 +113,30 @@ def get_rotated_bbox_from_mask(mask):
     else:
         print("NO CONTOURS")
         return None, None
+    
+def get_new_bbox_from_mask(mask):
+    mask = mask.astype(np.uint8)
+    contours, hierarchy = cv2.findContours(
+        mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    rects_rot = [None]*len(contours)
+    rects = [None]*len(contours)
+    for i, c in enumerate(contours):
+        rot_bbox = cv2.minAreaRect(c)
+        if (rot_bbox[1][0] < rot_bbox[1][1]):
+            rot_bbox = (rot_bbox[0], (rot_bbox[1][1], rot_bbox[1][0]), rot_bbox[2] + 90)
+        rects_rot[i] = rot_bbox
+        rects[i] = cv2.boundingRect(c)
+    
+    # print(rects_rot[0])
+    if len(contours) > 0:
+        epsilon = 0.008*cv2.arcLength(contours[0],True)
+        c = cv2.approxPolyDP(contours[0],epsilon,True)
+        return rects_rot[0], rects[0], c
+    else:
+        print("NO CONTOURS")
+        return None, None, None
 
 def crop_image(annotations, image_like):
     if isinstance(image_like, str):
@@ -236,11 +259,9 @@ def box_prompt(masks, bbox, target_height, target_width):
     mask_i = masks[max_iou_index].cpu().numpy()
     mask_i = cv2.resize(mask_i, (max_size, max_size))
     mask_i = mask_i[half_max-half_h:half_max+half_h, half_max-half_w:half_max+half_w]
-    minRect, contour = get_rotated_bbox_from_mask(mask_i)
-    # print(minRect)
-    # print(minRect.shape)
+    rot_rect, rect, contour = get_new_bbox_from_mask(mask_i)
 
-    return mask_i, minRect, contour, max_iou.cpu()
+    return mask_i, rot_rect, rect, contour, max_iou.cpu()
 
 
 def point_prompt(masks, points, point_label, target_height, target_width):  # numpy 处理
@@ -292,6 +313,9 @@ def draw_masks(input_img, results, input_size):
     new_h = int(h * scale)
     input_img = cv2.resize(input_img, (new_h, new_w))
 
+    if results[0].masks is None:
+        return input_img
+    
     masks = results[0].masks.data
 
     image_with_masks = np.copy(input_img)
@@ -377,17 +401,22 @@ def vis(img, annotations, class_names=None, input_size=480):
             -1
         )
         cv2.putText(img, text, (x0, y0 - int(0.7*txt_size[1])), font, 0.4, txt_color, thickness=1)
-
-        # mask_i = cv2.resize(annotations[i]["mask"], (max_size, max_size))
-        # mask_i = mask_i[half_max-half_w:half_max+half_w, half_max-half_h:half_max+half_h]
-
-        # minRect, minEllipse = get_rotated_bbox_from_mask(mask_i)
         
-        # for k, rect in enumerate(minRect):
-        #     print(rect)
+
         box = cv2.boxPoints(annotations[i]["rbbox"])
         box = np.intp(box) #np.intp: Integer used for indexing (same as C ssize_t; normally either int32 or int64)
         cv2.drawContours(img, [box], 0, color)
+
+        # box = annotations[i]["new_bbox"]
+
+        # cv2.rectangle(
+        #     img,
+        #     (box[0], box[1]),
+        #     (box[0] + box[2], box[1] + box[3]),
+        #     color,
+        #     1
+        # )
+
         # cv2.drawContours(img, [annotations[i]["contour"]], 0, color, 2)
         img = overlay(img, annotations[i]["mask"], color, 0.5)
     return img
