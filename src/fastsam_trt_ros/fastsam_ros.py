@@ -38,11 +38,11 @@ class FastSamNode:
 
         if self.compressed:
             self.image_sub = message_filters.Subscriber("image_in/compressed", CompressedImage)
-            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 20)
+            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 10)
             self.image_det_sync.registerCallback(self.image_compressed_detection_callback)
         else:
             self.image_sub = message_filters.Subscriber("image_in", SImage)
-            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 20)
+            self.image_det_sync = message_filters.TimeSynchronizer([self.image_sub, self.detection_sub], 10)
             self.image_det_sync.registerCallback(self.image_detection_callback)
 
         self.image_pub = rospy.Publisher("image_out" + "/compressed", CompressedImage, queue_size=1)
@@ -60,13 +60,7 @@ class FastSamNode:
         ori_w = self.cv_image.shape[1]
         # inter_img = self.cv_image.copy()
 
-        # t0 = time.perf_counter()
         self.results = self.predictor.segment(self.cv_image, self.conf, self.iou, self.retina_mask, self.agnostic_nms)
-        # print(self.results[0].masks.data[0].to(0))
-        # print(self.results[0].masks.data[0].device)
-
-        if(self.results[0].masks is None):
-            return
         
         annotations = []
         for det in det_msg.detections:
@@ -133,28 +127,21 @@ class FastSamNode:
 
         if self.image_pub.get_num_connections() > 0:
             disp_img = vis(self.cv_image, annotations)
+            # print(self.cv_image.shape   )
+            # self.display_img = draw_masks(self.cv_image, self.results, self.image_size)
             disp_msg = CompressedImage()
             disp_msg.header.stamp = det_msg.header.stamp
             disp_msg.format = "jpeg"
             disp_msg.data = np.array(cv2.imencode('.jpg', disp_img)[1]).tostring()
+            # Publish new image
             self.image_pub.publish(disp_msg)
 
-        # if self.inter_img_pub.get_num_connections() > 0:
-        #     inter_img = draw_masks(inter_img, self.results, self.image_size)
-            
-        #     disp_msg = CompressedImage()
-        #     disp_msg.header.stamp = det_msg.header.stamp
-        #     disp_msg.format = "jpeg"
-        #     disp_msg.data = np.array(cv2.imencode('.jpg', inter_img)[1]).tostring()
-        #     # Publish new image
-        #     self.inter_img_pub.publish(disp_msg)
-
-        print('FASTSAM :', (time.perf_counter() - t0)*1000, 'ms')
+        rospy.loginfo_throttle(1, 'FASTSAM : {} ms'.format((time.perf_counter() - t0)*1000))
 
     def image_detection_callback(self, img_msg:SImage, det_msg:Detection2DArray):
+        rospy.loginfo_throttle(1, 'FASTSAM : got data!')
         cv_image = self.img_bridge.imgmsg_to_cv2(img_msg, "rgb8")
         if (cv_image.shape[2] == 4):
-            # cv_image = cv_image[:,:,:3]
             cv_image = cv2.cvtColor(cv_image, cv2.COLOR_RGBA2RGB)
 
         self.cv_image = cv_image
@@ -166,8 +153,6 @@ class FastSamNode:
         self.cv_image = cv2.imdecode(np_image, cv2.IMREAD_UNCHANGED)
 
         self.run_detection(det_msg)
-        
-        
 
     def image_callback(self, msg):
         

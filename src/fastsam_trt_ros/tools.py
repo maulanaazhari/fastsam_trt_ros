@@ -33,7 +33,6 @@ def segment_image(image, bbox):
     segmented_image_array[y1:y2, x1:x2] = image_array[y1:y2, x1:x2]
     segmented_image = Image.fromarray(segmented_image_array)
     black_image = Image.new("RGB", image.size, (255, 255, 255))
-    # transparency_mask = np.zeros_like((), dtype=np.uint8)
     transparency_mask = np.zeros(
         (image_array.shape[0], image_array.shape[1]), dtype=np.uint8
     )

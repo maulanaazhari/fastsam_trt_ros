@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 
 import cv2
 import torch
@@ -11,10 +11,6 @@ import tensorrt as trt
 from ultralytics.engine.results import Results
 from ultralytics.utils import ops
 import threading
-
-
-device = torch.device('cuda:0' if torch.cuda.is_available() else 'cpu')
-# print("DEVICE ", torch.device)
 
 TRT_LOGGER = trt.Logger()
 trt.init_libnvinfer_plugins(TRT_LOGGER, '')
@@ -107,6 +103,20 @@ def allocate_buffers_nms(engine):
             out_names.append(binding)
     return inputs, outputs, bindings, stream, input_shapes, out_shapes, out_names, max_batch_size
 
+# This function is generalized for multiple inputs/outputs.
+# inputs and outputs are expected to be lists of HostDeviceMem objects.
+def do_inference(context, bindings, inputs, outputs, stream):
+    # Transfer input data to the GPU.
+    [cuda.memcpy_htod_async(inp.device, inp.host, stream) for inp in inputs]
+    # Run inference.
+    context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
+    # Transfer predictions back from the GPU.
+    [cuda.memcpy_dtoh_async(out.host, out.device, stream) for out in outputs]
+    # Synchronize the stream
+    stream.synchronize()
+    # Return only the host outputs.
+    return [out.host for out in outputs]
+
 class TrtModelNMS(object):
     def __init__(self, model, max_size):
         self.engine_file = model
@@ -125,38 +135,19 @@ class TrtModelNMS(object):
         if self.engine is None:
             self.build()
 
-    # This function is generalized for multiple inputs/outputs.
-    # inputs and outputs are expected to be lists of HostDeviceMem objects.
-    def do_inference(self, context, bindings, inputs, outputs, stream):
-        threading.Thread.__init__(self)
-        self.cfx.push()
-
-        # Transfer input data to the GPU.
-        [cuda.memcpy_htod_async(inp.device, inp.host, stream) for inp in inputs]
-        # Run inference.
-        context.execute_async_v2(bindings=bindings, stream_handle=stream.handle)
-        # Transfer predictions back from the GPU.
-        [cuda.memcpy_dtoh_async(out.host, out.device, stream) for out in outputs]
-        # Synchronize the stream
-        stream.synchronize()
-        
-        self.cfx.pop()
-        
-        # Return only the host outputs.
-        return [out.host for out in outputs]
-
     def build(self):
         with open(self.engine_file, 'rb') as f, trt.Runtime(TRT_LOGGER) as runtime:
             self.engine = runtime.deserialize_cuda_engine(f.read())
         # Allocate
         self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size = \
                 allocate_buffers_nms(self.engine)
-        # print(self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size)
         self.context = self.engine.create_execution_context()
         self.context.active_optimization_profile = 0
         # non lazy load implementation
 
     def run(self, input, deflatten: bool = True, as_dict = False):
+        threading.Thread.__init__(self)
+        self.cfx.push()
 
         input = np.asarray(input)
         batch_size, _, im_height, im_width = input.shape
@@ -167,23 +158,22 @@ class TrtModelNMS(object):
         self.inputs[0].host[:allocate_place] = input.flatten(order='C').astype(np.float32)
         self.context.set_binding_shape(0, input.shape)
 
-        trt_outputs = self.do_inference(
+        trt_outputs = do_inference(
             self.context, bindings=self.bindings,
             inputs=self.inputs, outputs=self.outputs, stream=self.stream)
-        # print(self.inputs, self.outputs, self.bindings, self.stream, self.input_shapes, self.out_shapes, self.out_names, self.max_batch_size)
-        # Reshape TRT outputs to original shape instead of flattened array
 
+        # Reshape TRT outputs to original shape instead of flattened array
         if deflatten:
             out_shapes = [(batch_size, ) + self.out_shapes[ix] for ix in range(len(self.out_shapes))]
             trt_outputs = [output[:np.prod(shape)].reshape(shape) for output, shape in zip(trt_outputs, out_shapes)]
         if as_dict:
             return {self.out_names[ix]: trt_output[:batch_size] for ix, trt_output in enumerate(trt_outputs)}
         
+        self.cfx.pop()
         return [trt_output[:batch_size] for trt_output in trt_outputs]
 
 def postprocess(preds, img, orig_imgs, retina_masks, conf, iou, agnostic_nms=False):
     """TODO: filter by classes."""
-    # return None
     
     p = ops.non_max_suppression(preds[0],
                                 conf,
@@ -192,7 +182,6 @@ def postprocess(preds, img, orig_imgs, retina_masks, conf, iou, agnostic_nms=Fal
                                 max_det=100,
                                 nc=1)
 
-    # print(p[0].device)
     results = []
     proto = preds[1][-1] if len(preds[1]) == 3 else preds[1]  # second output is len 3 if pt, but only 1 if exported
     for i, pred in enumerate(p):
@@ -252,13 +241,7 @@ class FastSam(object):
         
         data_0 = torch.from_numpy(preds[5]).cuda()
         data_1 = [[torch.from_numpy(preds[2]).cuda(), torch.from_numpy(preds[3]).cuda(), torch.from_numpy(preds[4]).cuda()], torch.from_numpy(preds[1]).cuda(), torch.from_numpy(preds[0]).cuda()]
-
-        # data_0 = torch.from_numpy(preds[5])
-        # data_1 = [[torch.from_numpy(preds[2]), torch.from_numpy(preds[3]), torch.from_numpy(preds[4])], torch.from_numpy(preds[1]), torch.from_numpy(preds[0])]
-
         preds = [data_0, data_1]
-
-        # print("asd", data_0.device)
 
         results = postprocess(preds, inp, bgr_img, retina_mask, conf, iou, agnostic_nms)
         
