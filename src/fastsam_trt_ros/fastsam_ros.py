@@ -54,6 +54,7 @@ class FastSamNode:
 
         t0 = time.perf_counter()
         if(self.cv_image is None):
+            rospy.loginfo("Image is empty!")
             return
         
         ori_h = self.cv_image.shape[0]
@@ -146,13 +147,21 @@ class FastSamNode:
 
         self.cv_image = cv_image
         
-        self.run_detection(det_msg)
+        try:
+            self.run_detection(det_msg)
+        except:
+            rospy.loginfo("Error 2!")
+            return
 
     def image_compressed_detection_callback(self, img_msg:CompressedImage, det_msg:Detection2DArray):
         np_image = np.frombuffer(img_msg.data, dtype=np.uint8)
         self.cv_image = cv2.imdecode(np_image, cv2.IMREAD_UNCHANGED)
 
-        self.run_detection(det_msg)
+        try:
+            self.run_detection(det_msg)
+        except:
+            rospy.loginfo("Error 1!")
+            return
 
     def image_callback(self, msg):
         

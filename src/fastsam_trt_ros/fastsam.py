@@ -230,6 +230,7 @@ class FastSam(object):
         # Load model
         self.model = TrtModelNMS(model_weights, max_size)
         self.get_fps()
+        # self.warm_up()
 
 
     def segment(self, bgr_img, conf, iou, retina_mask, agnostic_nms):
@@ -255,10 +256,7 @@ class FastSam(object):
         img = np.ones((self.imgsz[0], self.imgsz[1], 3))
         img = np.ascontiguousarray(img, dtype=np.float32)
         inp = pre_processing(img, self.imgsz[0])
+        t0 = time.perf_counter()
         for _ in range(5):  # warmup
             _ = self.model.run(inp)
-
-        t0 = time.perf_counter()
-        for _ in range(100):  # calculate average time
-            _ = self.model.run(inp)
-        print(100/(time.perf_counter() - t0), 'FPS')
+        print(5/(time.perf_counter() - t0), 'FPS')

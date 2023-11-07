@@ -21,10 +21,10 @@ catkin_python_setup()
 
 
 catkin_package(
- INCLUDE_DIRS include
+#  INCLUDE_DIRS include
  LIBRARIES fastsam_trt_ros
  CATKIN_DEPENDS cv_bridge image_transport roscpp rospy sensor_msgs vision_msgs fastsam_ros_msgs
- DEPENDS system_lib
+#  DEPENDS system_lib
 )
 
 ###########
@@ -34,7 +34,7 @@ catkin_package(
 ## Specify additional locations of header files
 ## Your package locations should be listed before other locations
 include_directories(
-  include
+  # include
   ${catkin_INCLUDE_DIRS}
 )
 
